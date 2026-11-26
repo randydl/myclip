@@ -5,6 +5,10 @@ on:
     branches: [ randy ]
   workflow_dispatch:
 
+# 创建/更新 Release 需要仓库写权限
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,8 +19,32 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # 构建镜像并导出为本地 tar，不在这一步直接 push，
+      # 以保证 Release 中的 tar 与 Docker Hub 上的镜像来自同一次构建
       - uses: docker/build-push-action@v6
         with:
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/myclip:latest
           outputs: type=docker,dest=./myclip.tar
-          push: true
+      # 将 tar 载入本地 Docker 后推送，替代 build-push-action 的 push: true
+      - name: Push image to Docker Hub
+        run: |
+          docker load -i ./myclip.tar
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/myclip:latest
+      # 将滚动标签 docker-latest 移动到当前 commit，使 Release 指向最新构建
+      - name: Update rolling tag
+        run: |
+          git tag -f docker-latest
+          git push -f origin refs/tags/docker-latest
+      # 创建（或更新）滚动 pre-release，同名 tar 资产会被自动覆盖
+      - name: Publish image tar as rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: docker-latest
+          name: Docker Image (latest build)
+          prerelease: true
+          make_latest: false
+          body: |
+            每次推送到 randy 分支后自动构建的 Docker 镜像 tar 包。
+
+            下载后执行 `docker load -i myclip.tar`，然后 `docker container run -d -p 9501:9501 ${{ secrets.DOCKERHUB_USERNAME }}/myclip:latest` 即可使用。
+          files: ./myclip.tar
